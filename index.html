@@ -124,6 +124,7 @@
   /* Quick-prompt chips removed — use slash / recipes instead; frees footer space. */
   #quickPrompts { display: none !important; }
   #chatTools { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+  #chatTools[hidden], .row.composer[hidden] { display: none !important; }
   #chatTools::-webkit-scrollbar { display: none; }
   #chatTools button { font-size: 12.5px; padding: 3px 10px; border-radius: 14px; flex: none; white-space: nowrap; }
   #chatTools #pickModel { flex: 0 1 auto; min-width: 84px; overflow: hidden; text-overflow: ellipsis; }
@@ -151,7 +152,7 @@
   body.files-only footer #chatTools,
   body.files-only footer #presenceBar,
   body.files-only footer #quickPrompts { display: none !important; }
-  body.files-only footer { padding: 4px 10px; gap: 0; }
+  body.files-only footer { padding: 4px 10px; gap: 0; border-top-color: #2a2a2a; }
   #msg { font-size: 12px; color: #888; min-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #msg.err { color: #f77; }
 
@@ -469,6 +470,7 @@
 <script src="i18n.js"></script>
 <script>
 const $ = id => document.getElementById(id);
+const UI_BUILD = 22; // bump when shell layout must force-refresh on phones
 const PRIMARY = /^(run|allow|accept|approve|keep|continue|build|yes|运行|允许|接受|继续)/i;
 const store = {
   get: k => localStorage.getItem('cr-' + k),
@@ -740,7 +742,8 @@ function connect() {
       authed = true; failures = 0;
       ungate();
       $('dot').className = 'ok';
-      status('Connected');
+      status('Connected · UI ' + UI_BUILD);
+      startRelayHeartbeat();
       send({ t: 'mode', mode });
       send({ t: 'windows' });
       const fromNotice = window.CursorRemoteApp?.takeOpenWin?.();
@@ -750,7 +753,9 @@ function connect() {
       if (fromAction) setTimeout(() => handleNotifAction(fromAction, store.get('window')), 400);
       sentWidth = 0;
       applyQuality();
-      send({ t: 'visible', v: document.visibilityState === 'visible' });
+      // Stay "present" for the relay while the socket is up — do not drop control just because the
+      // phone screen is off; NotifyService + no WebView pause keep the process alive.
+      send({ t: 'visible', v: true });
       send({ t: 'lang', v: I18N.lang });
       syncNotify();
       syncTabletDash();
@@ -915,10 +920,12 @@ function rememberPaneTab(name) {
   lastSyncedActive = name || '';
   store.set('paneTab', lastSyncedActive || null);
 }
-function lockPaneTab(name, ms = 5000) {
+function lockPaneTab(name, ms) {
   rememberPaneTab(name);
   tabLockName = name || '';
-  tabLockUntil = Date.now() + ms;
+  // Files = phone owns the view until the user picks another tab (no Cursor-led hopping).
+  const hold = ms != null ? ms : (mode === 'files' ? 86400000 : 8000);
+  tabLockUntil = Date.now() + hold;
 }
 function readingPinnedFile() {
   return $('paneView').classList.contains('diffing')
@@ -928,6 +935,8 @@ function readingPinnedFile() {
 function syncActiveEditorContent(tabs, { force = false } = {}) {
   if (!inPaneMode()) return;
   const list = tabs || [];
+  // Files tab: phone is source of truth — never auto-switch content from Cursor polls.
+  if (!force && mode === 'files') return;
   // After a phone tap, Cursor may still report Changes (and chat tabs) as aria-selected
   // for a few seconds — do not chase desktop selection during the lock window.
   if (!force && Date.now() < tabLockUntil && tabLockName) return;
@@ -1141,7 +1150,10 @@ function applyViews() {
     $('paneView').classList.toggle('active', mode === 'pane' || mode === 'files');
     $('screenView').classList.toggle('active', mode === 'screen');
   }
+  // hidden= + [hidden]{display:none!important} — CSS display:flex alone ignores the hidden attribute.
   $('chatTools').hidden = mode === 'screen' || filesOnly;
+  const composer = document.querySelector('footer .row.composer');
+  if (composer) composer.hidden = filesOnly;
 }
 
 function showChanges(m) {
@@ -1335,7 +1347,8 @@ function showMainMenu() {
       : standalone() ? '' : '<button class="opt" data-act="install"><span class="lbl">Add to home screen (opens like an app)</span></button>'}
     <button class="opt" data-act="clipPush"><span class="lbl">Paste clipboard → Cursor<span class="sub">Phone clipboard into the Agent composer</span></span></button>
     <button class="opt" data-act="clipPull"><span class="lbl">Copy Cursor → phone<span class="sub">Selection or last code block</span></span></button>
-    <button class="opt" data-act="reconnect"><span class="lbl">Reconnect</span></button>
+    <button class="opt" data-act="reloadUi"><span class="lbl">Reload app UI<span class="sub">Clear cache and fetch the latest Files / Dual pane shell (UI ${UI_BUILD})</span></span></button>
+    <button class="opt" data-act="reconnect"><span class="lbl">Reconnect relay</span></button>
     <button class="opt" data-act="voice"><span class="lbl">Voice button<span class="sub">Not needed if your keyboard has a mic</span></span><span class="switch ${store.get('voice') === 'on' ? 'on' : ''}"></span></button>
     <button class="opt" data-act="lang"><span class="lbl">语言 / Language</span><span class="tag">${I18N.lang === 'en' ? 'English' : '中文'}</span></button>
     <button class="opt" data-act="devices"><span class="lbl">Paired devices</span></button>
@@ -1491,8 +1504,18 @@ navigator.serviceWorker?.addEventListener('message', e => {
   if (e.data?.notifAction) handleNotifAction(e.data.notifAction, e.data.openWin);
 });
 document.addEventListener('visibilitychange', () => {
-  if (authed) send({ t: 'visible', v: document.visibilityState === 'visible' });
+  // Keep the relay session marked visible while connected — backgrounding must not idle us out.
+  if (authed) send({ t: 'visible', v: true });
 });
+
+let heartbeatTimer = null;
+function startRelayHeartbeat() {
+  clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(() => {
+    if (!authed || !ws || ws.readyState !== 1) return;
+    try { ws.send(JSON.stringify({ t: 'visible', v: true })); } catch {}
+  }, 25000);
+}
 // Deep links from notification openWindow hashes
 (() => {
   const h = location.hash || '';
@@ -1583,6 +1606,20 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'appUpdate') {
     closeSheet();
     await checkAppUpdate(true);
+  }
+  else if (act === 'reloadUi') {
+    closeSheet();
+    status('Reloading UI…');
+    if (window.CursorRemoteApp?.clearCacheAndReload) {
+      window.CursorRemoteApp.clearCacheAndReload();
+      return;
+    }
+    Promise.resolve()
+      .then(() => caches?.keys?.() || [])
+      .then(keys => Promise.all((keys || []).map(k => caches.delete(k))))
+      .then(() => navigator.serviceWorker?.getRegistrations?.() || [])
+      .then(regs => Promise.all((regs || []).map(r => r.unregister())))
+      .finally(() => { location.href = location.pathname + '?crbust=' + Date.now(); });
   }
   else if (act === 'reconnect') { closeSheet(); ws?.close(); }
   else if (act === 'clipPush') { closeSheet(); $('clipPush').click(); }
