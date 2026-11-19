@@ -33,8 +33,9 @@
   #title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #title::after { content: "▾"; color: #888; flex: none; }
   .seg { display: flex; flex: none; border: 1px solid #3c3c3c; border-radius: 8px; overflow: hidden; }
-  .seg button { border: none; border-radius: 0; padding: 5px 10px; background: #2d2d2d; }
+  .seg button { border: none; border-radius: 0; padding: 5px 8px; background: #2d2d2d; font-size: 13px; }
   .seg button.on { background: #0e639c; }
+  #tabPane { padding-left: 7px; padding-right: 7px; }
   #menuBtn { flex: none; padding: 5px 10px; }
 
   main { flex: 1; min-height: 0; position: relative; }
@@ -244,13 +245,12 @@
   #paneDiff .pdAct { flex: none; display: flex; flex-wrap: wrap; gap: 8px; }
   #paneDiff .pdAct button { flex: 1; min-width: 72px; padding: 8px 10px; }
 
-  /* ≥700px landscape covers Tab S7-class devices (incl. denser DPI / zoom) */
-  @media (orientation: landscape) and (min-width: 700px) {
+  /* Any landscape device: Dual pane toggle → chat + side pane side-by-side */
+  @media (orientation: landscape) {
     body.tablet-dash > #dashStrip { display: flex; }
-    /* Chat + Files side-by-side (tablet-friendly Cursor layout) */
     body.tablet-dash.dual-pane main {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(280px, 42%);
+      grid-template-columns: minmax(0, 1fr) minmax(140px, 45%);
       gap: 0;
     }
     body.tablet-dash.dual-pane #chatView,
@@ -272,7 +272,7 @@
   <button id="title"><span id="titleText">Connecting…</span></button>
   <div class="seg">
     <button id="tabChat" class="on">Chat</button>
-    <button id="tabPane">Files</button>
+    <button id="tabPane">Dual pane</button>
     <button id="tabScreen">Screen</button>
   </div>
   <button id="menuBtn">⋯</button>
@@ -293,7 +293,7 @@
     <div id="actionBar"></div>
   </section>
 
-  <section id="paneView" class="view" aria-label="Files">
+  <section id="paneView" class="view" aria-label="Dual pane">
     <div id="paneTabStrip" aria-label="Open editors">
       <button type="button" id="paneOpen" title="Open file in Cursor">Open…</button>
     </div>
@@ -790,7 +790,7 @@ function showMenu(kind, items, max) {
 let changesCache = [];
 let changesActions = [];
 let lastDashChanged = -1;
-const isTabletLandscape = () => matchMedia('(orientation: landscape) and (min-width: 700px)').matches;
+const isLandscape = () => matchMedia('(orientation: landscape)').matches;
 
 function showPaneFiles() {
   $('paneView').classList.remove('diffing');
@@ -854,8 +854,8 @@ $('panePickGo').onclick = () => submitPanePicker();
 $('panePickInput').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); submitPanePicker(); } };
 
 function applyViews() {
-  // Landscape + Files → chat and Files pane side-by-side (tablet-friendly Cursor layout).
-  const dual = isTabletLandscape() && mode === 'pane';
+  // Landscape + Dual pane toggle → chat and side pane side-by-side (any device width).
+  const dual = isLandscape() && mode === 'pane';
   document.body.classList.toggle('dual-pane', dual);
   if (dual) {
     $('chatView').classList.add('active');
@@ -916,7 +916,7 @@ function renderDash(m) {
 
 let dashTimer = null;
 function syncTabletDash() {
-  const on = isTabletLandscape();
+  const on = isLandscape();
   document.body.classList.toggle('tablet-dash', on);
   applyViews();
   clearInterval(dashTimer);
@@ -930,7 +930,7 @@ function syncTabletDash() {
     send({ t: 'dash' });
   }, 3000);
 }
-matchMedia('(orientation: landscape) and (min-width: 700px)').addEventListener('change', syncTabletDash);
+matchMedia('(orientation: landscape)').addEventListener('change', syncTabletDash);
 
 function formatDiffHtml(text) {
   return esc(text || '').split('\n').map(line => {
@@ -1307,7 +1307,7 @@ function setMode(m) {
   $('tabPane').classList.toggle('on', mode === 'pane');
   $('tabScreen').classList.toggle('on', mode === 'screen');
   applyViews();
-  // Relay only distinguishes chat vs screen; Files keeps chat polling.
+  // Relay only distinguishes chat vs screen; Dual pane keeps chat polling.
   if (authed) send({ t: 'mode', mode: mode === 'screen' ? 'screen' : 'chat' });
   if (mode === 'screen') { layoutStage(); applyQuality(); }
   if (mode === 'pane' || document.body.classList.contains('dual-pane')) {

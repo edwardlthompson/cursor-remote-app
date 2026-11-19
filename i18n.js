@@ -9,6 +9,7 @@ const I18N = (() => {
   "Connecting…": "连接中…",
   "Chat": "对话",
   "Files": "文件",
+  "Dual pane": "双栏",
   "Screen": "画面",
   "Open…": "打开…",
   "Open": "打开",
