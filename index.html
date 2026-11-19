@@ -23,6 +23,7 @@
   button { padding: 6px 12px; white-space: nowrap; cursor: pointer; }
   button:active { filter: brightness(1.3); }
   button.on, button.primary { background: #0e639c; border-color: #1177bb; color: #fff; }
+  button.ghost { background: #2d2d2d; border-color: #3c3c3c; color: #ddd; font-weight: 400; }
   [hidden] { display: none !important; }
 
   header { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #252526; border-bottom: 1px solid #333; min-width: 0; }
@@ -215,9 +216,21 @@
   #dashStrip .dw.waiting .ds { color: #e5c07b; }
   #dashStrip .dw.idle .ds { color: #6a6; }
 
-  /* Files pane — same chrome as chat (scrollable list + empty state) */
+  /* Files pane — editor tabs + changed files (chat-like chrome) */
+  #paneTabStrip { flex: none; display: flex; gap: 4px; padding: 6px 8px; overflow-x: auto; scrollbar-width: none; background: #252526; border-bottom: 1px solid #333; min-width: 0; align-items: center; }
+  #paneTabStrip::-webkit-scrollbar { display: none; }
+  #paneTabStrip .et { flex: none; max-width: 140px; padding: 5px 8px; font-size: 12.5px; border-radius: 6px; display: flex; align-items: center; gap: 4px; background: #2d2d2d; }
+  #paneTabStrip .et.on { background: #0e639c; border-color: #1177bb; color: #fff; }
+  #paneTabStrip .et .en { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100px; }
+  #paneTabStrip .et .ex { flex: none; padding: 0 4px; border: none; background: transparent; color: #aaa; font-size: 14px; }
+  #paneTabStrip .et.on .ex { color: #cde; }
+  #paneOpen { flex: none; padding: 5px 10px; font-size: 12.5px; }
   #paneFiles { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 12px 16px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; min-height: 0; }
-  #paneFiles .dh { font-size: 13px; color: #aaa; font-weight: 600; margin: 0 0 10px; padding: 0 2px; }
+  #paneFiles .dh { font-size: 13px; color: #aaa; font-weight: 600; margin: 0 0 10px; padding: 0 2px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  #panePicker { display: none; flex: none; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #333; background: #222; }
+  #panePicker.show { display: flex; }
+  #panePicker input { flex: 1; min-width: 0; font-size: 15px; padding: 8px 10px; }
+  #panePicker button { flex: none; padding: 8px 12px; }
   #dashChanges .dc { display: flex; gap: 6px; align-items: stretch; margin-bottom: 8px; }
   #dashChanges .dc .opt { margin-bottom: 0; flex: 1; text-align: left; }
   #dashEmpty { color: #888; text-align: center; margin-top: 22vh; padding: 0 20px; line-height: 1.6; }
@@ -280,10 +293,18 @@
     <div id="actionBar"></div>
   </section>
 
-  <section id="paneView" class="view" aria-label="Changed files">
+  <section id="paneView" class="view" aria-label="Files">
+    <div id="paneTabStrip" aria-label="Open editors">
+      <button type="button" id="paneOpen" title="Open file in Cursor">Open…</button>
+    </div>
+    <div id="panePicker">
+      <input id="panePickInput" placeholder="BUILD_PLAN.md or file name…" enterkeyhint="go" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button type="button" id="panePickGo">Open</button>
+      <button type="button" id="panePickCancel" class="ghost">Cancel</button>
+    </div>
     <div id="paneFiles">
-      <div class="dh">Changed files</div>
-      <div id="dashChanges"><div id="dashEmpty">No pending changes.<br>When the Agent edits files, they show up here — same Keep / Undo as on the desktop.</div></div>
+      <div class="dh"><span>Changed files</span></div>
+      <div id="dashChanges"><div id="dashEmpty">No pending changes.<br>Open a file with Open… — tabs stay in sync with Cursor.</div></div>
     </div>
     <div id="paneDiff">
       <div class="pdHead">
@@ -664,6 +685,7 @@ function connect() {
     else if (m.t === 'changes') showChanges(m);
     else if (m.t === 'diff') showDiff(m);
     else if (m.t === 'file') showFile(m);
+    else if (m.t === 'editors') renderEditorTabs(m.tabs || []);
     else if (m.t === 'presence') applyPresence(m);
     else if (m.t === 'dash') renderDash(m);
     else if (m.t === 'clipboard') onClipboardPull(m);
@@ -778,6 +800,58 @@ function showPaneDiffUi() {
   $('paneView').classList.add('diffing');
   $('paneDiff').classList.add('show');
 }
+
+let editorTabsCache = [];
+let editorsTimer = null;
+function renderEditorTabs(tabs) {
+  editorTabsCache = tabs || [];
+  const strip = $('paneTabStrip');
+  if (!strip) return;
+  const openBtn = $('paneOpen');
+  strip.querySelectorAll('.et').forEach(el => el.remove());
+  for (const t of editorTabsCache) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'et' + (t.active ? ' on' : '');
+    b.title = t.label || t.name;
+    b.innerHTML = `<span class="en">${esc((t.dirty ? '● ' : '') + t.name)}</span><span class="ex" data-close="${esc(t.name)}" aria-label="Close">×</span>`;
+    b.onclick = e => {
+      if (e.target.closest('[data-close]')) {
+        status('Closing…');
+        return send({ t: 'editorClose', name: t.name });
+      }
+      status('Switching tab…');
+      send({ t: 'editorFocus', name: t.name });
+      if (/\.\w+$/.test(t.name)) send({ t: 'file', path: t.name });
+    };
+    strip.insertBefore(b, openBtn);
+  }
+}
+function startEditorsPoll() {
+  clearInterval(editorsTimer);
+  editorsTimer = null;
+  if (!(mode === 'pane' || document.body.classList.contains('dual-pane'))) return;
+  send({ t: 'editors' });
+  editorsTimer = setInterval(() => {
+    if (!authed) return;
+    if (mode === 'pane' || document.body.classList.contains('dual-pane')) send({ t: 'editors' });
+  }, 2000);
+}
+function showPanePicker(on) {
+  $('panePicker').classList.toggle('show', on);
+  if (on) { $('panePickInput').value = ''; setTimeout(() => $('panePickInput').focus(), 50); }
+}
+async function submitPanePicker() {
+  const q = $('panePickInput').value.trim();
+  if (!q) return status('Enter a file name (e.g. BUILD_PLAN.md)', false);
+  showPanePicker(false);
+  status('Opening in Cursor…');
+  send({ t: 'editorOpen', query: q });
+}
+$('paneOpen').onclick = () => showPanePicker(true);
+$('panePickCancel').onclick = () => showPanePicker(false);
+$('panePickGo').onclick = () => submitPanePicker();
+$('panePickInput').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); submitPanePicker(); } };
 
 function applyViews() {
   // Landscape + Files → chat and Files pane side-by-side (tablet-friendly Cursor layout).
@@ -1238,7 +1312,10 @@ function setMode(m) {
   if (mode === 'screen') { layoutStage(); applyQuality(); }
   if (mode === 'pane' || document.body.classList.contains('dual-pane')) {
     showPaneFiles();
-    if (authed) send({ t: 'changes' });
+    if (authed) { send({ t: 'changes' }); startEditorsPoll(); }
+  } else {
+    clearInterval(editorsTimer);
+    editorsTimer = null;
   }
 }
 $('tabChat').onclick = () => setMode('chat');
