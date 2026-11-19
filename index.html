@@ -853,11 +853,21 @@ function inPaneMode() {
 
 function syncActiveEditorContent(tabs, { force = false } = {}) {
   if (!inPaneMode()) return;
-  const active = (tabs || []).find(t => t.active) || (tabs || [])[0];
+  // Prefer a selected file tab; fall back to Changes, then first tab.
+  const list = tabs || [];
+  const active = list.find(t => t.active && t.name !== 'Changes')
+    || list.find(t => t.active)
+    || list.find(t => t.name !== 'Changes')
+    || list[0];
   if (!active?.name) return;
   if (!force && active.name === lastSyncedActive) return;
   lastSyncedActive = active.name;
-  // Load preview into the dual pane (Cursor → phone).
+  if (/^Changes$/i.test(active.name)) {
+    showPaneFiles();
+    send({ t: 'changes' });
+    return;
+  }
+  // Load file preview into the dual/files pane (Cursor → phone).
   send({ t: 'file', path: active.name });
 }
 
@@ -883,7 +893,12 @@ function renderEditorTabs(tabs) {
       lastSyncedActive = t.name;
       status('Switching tab…');
       send({ t: 'editorFocus', name: t.name });
-      send({ t: 'file', path: t.name });
+      if (/^Changes$/i.test(t.name)) {
+        showPaneFiles();
+        send({ t: 'changes' });
+      } else {
+        send({ t: 'file', path: t.name });
+      }
     };
     strip.insertBefore(b, openBtn);
   }
