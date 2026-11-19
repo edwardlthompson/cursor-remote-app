@@ -861,14 +861,21 @@ function inPaneMode() {
 
 function syncActiveEditorContent(tabs, { force = false } = {}) {
   if (!inPaneMode()) return;
-  // Prefer a selected file tab; fall back to Changes, then first tab.
   const list = tabs || [];
-  const active = list.find(t => t.active && t.name !== 'Changes')
+  // Prefer a selected *file* tab. Agents often marks Changes selected too — don't let it
+  // steal the pane every poll once the user (or sync) opened a real file.
+  const activeFile = list.find(t => t.active && !/^Changes$/i.test(t.name));
+  const active = activeFile
     || list.find(t => t.active)
-    || list.find(t => t.name !== 'Changes')
+    || list.find(t => !/^Changes$/i.test(t.name))
     || list[0];
   if (!active?.name) return;
   if (!force && active.name === lastSyncedActive) return;
+  if (!force && lastSyncedActive && !/^Changes$/i.test(lastSyncedActive)
+      && list.some(t => t.name === lastSyncedActive)
+      && /^Changes$/i.test(active.name)) {
+    return;
+  }
   lastSyncedActive = active.name;
   if (/^Changes$/i.test(active.name)) {
     showPaneFiles();
