@@ -146,6 +146,12 @@
   @media (max-width: 520px) {
     #clipPush, #clipPull { display: none; }
   }
+  /* Files tab = reading only — no chat composer / History tools. */
+  body.files-only footer .row.composer,
+  body.files-only footer #chatTools,
+  body.files-only footer #presenceBar,
+  body.files-only footer #quickPrompts { display: none !important; }
+  body.files-only footer { padding: 4px 10px; gap: 0; }
   #msg { font-size: 12px; color: #888; min-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #msg.err { color: #f77; }
 
@@ -886,6 +892,8 @@ function showPaneDiffUi() {
 let editorTabsCache = [];
 let editorsTimer = null;
 let lastSyncedActive = store.get('paneTab') || '';
+let tabLockUntil = 0;
+let tabLockName = '';
 let suggestTimer = null;
 let suggestSeq = 0;
 let pickHits = [];
@@ -895,25 +903,53 @@ let mdPreviewMode = store.get('mdPreview') !== 'off'; // default Preview for mar
 function inPaneMode() {
   return mode === 'pane' || mode === 'files' || document.body.classList.contains('dual-pane');
 }
+function tabKey(name) {
+  const n = String(name || '').trim();
+  if (/^Changes$/i.test(n)) return 'changes';
+  return (n.split(/[/\\]/).pop() || n).toLowerCase();
+}
+function tabMatch(a, b) {
+  return !!a && !!b && tabKey(a) === tabKey(b);
+}
 function rememberPaneTab(name) {
   lastSyncedActive = name || '';
   store.set('paneTab', lastSyncedActive || null);
+}
+function lockPaneTab(name, ms = 5000) {
+  rememberPaneTab(name);
+  tabLockName = name || '';
+  tabLockUntil = Date.now() + ms;
+}
+function readingPinnedFile() {
+  return $('paneView').classList.contains('diffing')
+    && lastSyncedActive && !/^Changes$/i.test(lastSyncedActive);
 }
 
 function syncActiveEditorContent(tabs, { force = false } = {}) {
   if (!inPaneMode()) return;
   const list = tabs || [];
-  // Prefer a selected *file* tab. Agents often marks Changes selected too — don't let it
-  // steal the pane every poll once the user (or sync) opened a real file.
+  // After a phone tap, Cursor may still report Changes (and chat tabs) as aria-selected
+  // for a few seconds — do not chase desktop selection during the lock window.
+  if (!force && Date.now() < tabLockUntil && tabLockName) return;
+
+  // Sticky phone pin: keep showing the open file even when Changes is also selected.
+  if (!force && lastSyncedActive && !/^Changes$/i.test(lastSyncedActive)
+      && list.some(t => tabMatch(t.name, lastSyncedActive))) {
+    if (paneFileCache && tabMatch(paneFileCache.name, lastSyncedActive) && readingPinnedFile()) return;
+    if (!readingPinnedFile()) send({ t: 'file', path: lastSyncedActive });
+    return;
+  }
+
+  // Prefer a selected *file* tab. Agents often marks Changes + chat title selected together.
   const activeFile = list.find(t => t.active && !/^Changes$/i.test(t.name));
   const active = activeFile
     || list.find(t => t.active)
     || list.find(t => !/^Changes$/i.test(t.name))
     || list[0];
   if (!active?.name) return;
-  if (!force && active.name === lastSyncedActive) return;
+  if (!force && tabMatch(active.name, lastSyncedActive)) return;
   if (!force && lastSyncedActive && !/^Changes$/i.test(lastSyncedActive)
-      && list.some(t => t.name === lastSyncedActive)
+      && list.some(t => tabMatch(t.name, lastSyncedActive))
       && /^Changes$/i.test(active.name)) {
     return;
   }
@@ -923,7 +959,6 @@ function syncActiveEditorContent(tabs, { force = false } = {}) {
     send({ t: 'changes' });
     return;
   }
-  // Load file preview into the dual/files pane (Cursor → phone).
   send({ t: 'file', path: active.name });
 }
 
@@ -940,17 +975,23 @@ function renderEditorTabs(tabs) {
   for (const t of editorTabsCache) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'et' + (t.active ? ' on' : '');
+    const on = lastSyncedActive ? tabMatch(t.name, lastSyncedActive) : !!t.active;
+    b.className = 'et' + (on ? ' on' : '');
     b.title = t.label || t.name;
     b.innerHTML = `<span class="en">${esc((t.dirty ? '● ' : '') + t.name)}</span><span class="ex" data-close="${esc(t.name)}" aria-label="Close">×</span>`;
     b.onclick = e => {
       if (e.target.closest('[data-close]')) {
         status('Closing…');
-        if (lastSyncedActive === t.name) lastSyncedActive = '';
+        if (tabMatch(lastSyncedActive, t.name)) {
+          lastSyncedActive = '';
+          store.set('paneTab', null);
+          tabLockName = '';
+          tabLockUntil = 0;
+        }
         return send({ t: 'editorClose', name: t.name });
       }
-      // Phone → Cursor focus + local preview (both ways).
-      rememberPaneTab(t.name);
+      // Phone → Cursor focus + local preview (both ways). Lock so polls cannot bounce to Changes.
+      lockPaneTab(t.name);
       status('Switching tab…');
       send({ t: 'editorFocus', name: t.name });
       if (/^Changes$/i.test(t.name)) {
@@ -1054,9 +1095,11 @@ function openPanePickPath(pathOrQuery) {
   const q = String(pathOrQuery || '').trim();
   if (!q) return status('Enter a file name (e.g. BUILD_PLAN.md)', false);
   showPanePicker(false);
-  lastSyncedActive = '';
+  const base = q.split(/[/\\]/).pop() || q;
+  lockPaneTab(base);
   status('Opening in Cursor…');
   send({ t: 'editorOpen', query: q });
+  if (/\.\w{1,16}$/.test(base)) send({ t: 'file', path: q });
 }
 function submitPanePicker() {
   const q = $('panePickInput').value.trim();
@@ -1085,7 +1128,9 @@ $('panePickHits').onclick = e => {
 function applyViews() {
   // Chat = left only · Dual pane = both (landscape) · Files = right only · Screen = desktop.
   const dual = isLandscape() && mode === 'pane';
+  const filesOnly = mode === 'files';
   document.body.classList.toggle('dual-pane', dual);
+  document.body.classList.toggle('files-only', filesOnly);
   if (dual) {
     $('chatView').classList.add('active');
     $('paneView').classList.add('active');
@@ -1096,15 +1141,17 @@ function applyViews() {
     $('paneView').classList.toggle('active', mode === 'pane' || mode === 'files');
     $('screenView').classList.toggle('active', mode === 'screen');
   }
-  $('chatTools').hidden = mode === 'screen';
+  $('chatTools').hidden = mode === 'screen' || filesOnly;
 }
 
 function showChanges(m) {
   status('');
   changesCache = m.files || [];
   changesActions = m.actions || [];
-  showPaneFiles();
   renderDashChanges();
+  // Refresh the Changes list data only — never steal an open file preview.
+  // (Previously every changes poll called showPaneFiles() and bounced Dual/Files off the file.)
+  if (!readingPinnedFile()) showPaneFiles();
   if (!m.files.length) { if (sheetKind === 'changes' || sheetKind === 'diff') closeSheet(); return status('No pending changes'); }
   // Files pane already shows the list — skip the bottom sheet unless it is already open.
   if (inPaneMode() && sheetKind !== 'changes' && sheetKind !== 'diff') return;
@@ -1814,9 +1861,10 @@ $('vWrap').classList.toggle('on', store.get('wrap') !== 'off');
 function openFile(ref) {
   if (inPaneMode()) {
     // Dual pane: preview stays in the right pane (synced with Cursor tabs).
-    lastSyncedActive = String(ref || '').split('/').pop() || lastSyncedActive;
+    const base = String(ref || '').split(/[/\\]/).pop() || lastSyncedActive;
+    lockPaneTab(base);
     showPaneDiffUi();
-    $('paneDiffTitle').textContent = String(ref || '').split('/').pop() || 'File';
+    $('paneDiffTitle').textContent = base || 'File';
     $('paneDiffBody').innerHTML = '<div class="hint">Reading from the computer…</div>';
     $('paneDiffAct').innerHTML = '';
     send({ t: 'file', path: ref });
@@ -1892,7 +1940,11 @@ function updateMdModeToggle(show) {
 function renderPaneFile(m) {
   showPaneDiffUi();
   paneFileCache = m;
-  if (m.name) rememberPaneTab(m.name);
+  if (m.name) {
+    // Keep pin, but do not extend lock forever — allow intentional desktop-led switches later.
+    rememberPaneTab(m.name);
+    status('');
+  }
   $('paneDiffTitle').textContent = (m.name || 'File') + (m.truncated ? ' (truncated)' : '');
   $('paneDiffAct').classList.remove('show');
   $('paneDiffAct').innerHTML = ''; // no Changed-files / Diff footer on file preview
