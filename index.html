@@ -247,12 +247,33 @@
   #paneDiff .pdHead { flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; }
   #paneDiff .pdHead #paneDiffBack { flex: none; padding: 5px 10px; }
   #paneDiff .pdHead h3 { flex: 1; min-width: 0; margin: 0; font-size: 14px; color: #eee; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #paneMdMode { flex: none; display: none; border: 1px solid #3c3c3c; border-radius: 8px; overflow: hidden; }
+  #paneMdMode.show { display: flex; }
+  #paneMdMode button { border: none; border-radius: 0; padding: 5px 10px; font-size: 12px; background: #2d2d2d; }
+  #paneMdMode button.on { background: #0e639c; color: #fff; }
   #paneDiffBody { flex: 1; min-height: 0; max-height: none; margin-bottom: 0; background: #111; overflow: auto; -webkit-overflow-scrolling: touch; }
   #paneDiffBody .code { font: 12px/1.5 ui-monospace, Menlo, monospace; padding: 6px 0 24px; min-width: max-content; }
   #paneDiffBody .l { display: flex; white-space: pre; }
   #paneDiffBody .l i { flex: none; width: 3.6em; padding-right: 10px; text-align: right; color: #5a5a5a; font-style: normal; user-select: none; -webkit-user-select: none; }
   #paneDiffBody .l.hl { background: #264f7855; }
-  #paneDiff .pdAct { flex: none; display: flex; flex-wrap: wrap; gap: 8px; }
+  #paneDiffBody.md-preview { padding: 14px 16px 28px; font: 14.5px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #ddd; }
+  #paneDiffBody.md-preview h1, #paneDiffBody.md-preview h2, #paneDiffBody.md-preview h3 { color: #fff; margin: 1em 0 .45em; line-height: 1.3; }
+  #paneDiffBody.md-preview h1 { font-size: 1.55em; border-bottom: 1px solid #333; padding-bottom: .25em; }
+  #paneDiffBody.md-preview h2 { font-size: 1.3em; border-bottom: 1px solid #2a2a2a; padding-bottom: .2em; }
+  #paneDiffBody.md-preview h3 { font-size: 1.12em; }
+  #paneDiffBody.md-preview p { margin: 0 0 .75em; }
+  #paneDiffBody.md-preview ul, #paneDiffBody.md-preview ol { margin: 0 0 .75em; padding-left: 1.4em; }
+  #paneDiffBody.md-preview li { margin: .25em 0; }
+  #paneDiffBody.md-preview code { font: 12.5px/1.45 ui-monospace, Menlo, monospace; background: #1e1e1e; padding: 1px 5px; border-radius: 4px; }
+  #paneDiffBody.md-preview pre { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 0 0 .85em; }
+  #paneDiffBody.md-preview pre code { background: none; padding: 0; }
+  #paneDiffBody.md-preview blockquote { margin: 0 0 .75em; padding-left: 12px; border-left: 3px solid #555; color: #aaa; }
+  #paneDiffBody.md-preview a { color: #6cb6ff; }
+  #paneDiffBody.md-preview table { border-collapse: collapse; margin: 0 0 .85em; font-size: 13px; }
+  #paneDiffBody.md-preview th, #paneDiffBody.md-preview td { border: 1px solid #444; padding: 5px 8px; }
+  #paneDiffBody.md-preview hr { border: none; border-top: 1px solid #333; margin: 1em 0; }
+  #paneDiff .pdAct { flex: none; display: none; flex-wrap: wrap; gap: 8px; }
+  #paneDiff .pdAct.show { display: flex; }
   #paneDiff .pdAct button { flex: 1; min-width: 72px; padding: 8px 10px; }
 
   #paneSplit {
@@ -353,6 +374,10 @@
       <div class="pdHead">
         <button type="button" id="paneDiffBack">←</button>
         <h3 id="paneDiffTitle">Diff</h3>
+        <div id="paneMdMode" aria-label="Markdown view">
+          <button type="button" id="paneMdPreview" class="on">Preview</button>
+          <button type="button" id="paneMdSource">Source</button>
+        </div>
       </div>
       <div id="paneDiffBody"></div>
       <div class="pdAct" id="paneDiffAct"></div>
@@ -842,6 +867,7 @@ const isLandscape = () => matchMedia('(orientation: landscape)').matches;
 function showPaneFiles() {
   $('paneView').classList.remove('diffing');
   $('paneDiff').classList.remove('show');
+  updateMdModeToggle(false);
 }
 function showPaneDiffUi() {
   $('paneView').classList.add('diffing');
@@ -850,13 +876,19 @@ function showPaneDiffUi() {
 
 let editorTabsCache = [];
 let editorsTimer = null;
-let lastSyncedActive = '';
+let lastSyncedActive = store.get('paneTab') || '';
 let suggestTimer = null;
 let suggestSeq = 0;
 let pickHits = [];
+let paneFileCache = null; // last loaded file payload for Preview/Source toggle
+let mdPreviewMode = store.get('mdPreview') !== 'off'; // default Preview for markdown
 
 function inPaneMode() {
   return mode === 'pane' || mode === 'files' || document.body.classList.contains('dual-pane');
+}
+function rememberPaneTab(name) {
+  lastSyncedActive = name || '';
+  store.set('paneTab', lastSyncedActive || null);
 }
 
 function syncActiveEditorContent(tabs, { force = false } = {}) {
@@ -876,7 +908,7 @@ function syncActiveEditorContent(tabs, { force = false } = {}) {
       && /^Changes$/i.test(active.name)) {
     return;
   }
-  lastSyncedActive = active.name;
+  rememberPaneTab(active.name);
   if (/^Changes$/i.test(active.name)) {
     showPaneFiles();
     send({ t: 'changes' });
@@ -909,7 +941,7 @@ function renderEditorTabs(tabs) {
         return send({ t: 'editorClose', name: t.name });
       }
       // Phone → Cursor focus + local preview (both ways).
-      lastSyncedActive = t.name;
+      rememberPaneTab(t.name);
       status('Switching tab…');
       send({ t: 'editorFocus', name: t.name });
       if (/^Changes$/i.test(t.name)) {
@@ -1166,15 +1198,18 @@ function renderPaneDiff(m) {
   const prev = idx > 0 ? changesCache[idx - 1] : null;
   const next = idx >= 0 && idx < changesCache.length - 1 ? changesCache[idx + 1] : null;
   showPaneDiffUi();
+  updateMdModeToggle(false);
+  paneFileCache = null;
+  $('paneDiffBody').className = '';
   $('paneDiffTitle').textContent = (m.name || 'Diff') + (m.truncated ? ' (truncated)' : '');
+  // Keep Keep/Undo for diffs; hide the big Changed-files / Diff footer used on file preview.
   if (m.error) {
     $('paneDiffBody').innerHTML = `<div class="hint">${esc(m.error)}</div>`;
-    $('paneDiffAct').innerHTML = `<button data-chopen="${esc(m.name || '')}">Open preview</button>`
-      + (prev ? `<button data-chdiff="${esc(prev.name)}">← Prev</button>` : '')
-      + (next ? `<button data-chdiff="${esc(next.name)}">Next →</button>` : '');
+    $('paneDiffAct').innerHTML = '';
     return;
   }
   $('paneDiffBody').innerHTML = formatDiffHtml(m.text || '(empty)');
+  $('paneDiffAct').classList.add('show');
   $('paneDiffAct').innerHTML = (prev ? `<button data-chdiff="${esc(prev.name)}">← Prev</button>` : '')
     + (next ? `<button data-chdiff="${esc(next.name)}">Next →</button>` : '')
     + `<button data-ch="${Math.max(0, idx)}" data-name="${esc(m.name)}" data-act2="keep">Keep</button>`
@@ -1532,8 +1567,17 @@ function setMode(m) {
   if (authed) send({ t: 'mode', mode: mode === 'screen' ? 'screen' : 'chat' });
   if (mode === 'screen') { layoutStage(); applyQuality(); }
   if (inPaneMode()) {
-    showPaneFiles();
-    if (authed) { send({ t: 'changes' }); startEditorsPoll(); }
+    // Keep whatever tab was open — do not reset to Changes when flipping Dual ↔ Files.
+    if (authed) {
+      startEditorsPoll();
+      if (lastSyncedActive && !/^Changes$/i.test(lastSyncedActive)) {
+        send({ t: 'file', path: lastSyncedActive });
+      } else if (paneFileCache?.name) {
+        renderPaneFile(paneFileCache);
+      } else {
+        send({ t: 'changes' });
+      }
+    }
   } else {
     clearInterval(editorsTimer);
     editorsTimer = null;
@@ -1570,7 +1614,11 @@ function renderItem(it) {
     // Do not attach data-file — keeps tool rows from becoming file buttons.
   }
   else el.textContent = it.t || '';
-  if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.i)}</div>`);
+  if (it.b && it.k !== 'human') {
+    // Drop file-name / Review pills that sometimes ride along after a turn.
+    const labels = it.b.filter(l => !/\.\w{1,12}$/.test(l) && !/^Review$/i.test(l));
+    if (labels.length) el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(labels, it.i)}</div>`);
+  }
   return el;
 }
 
@@ -1775,40 +1823,111 @@ function openFile(ref) {
   send({ t: 'file', path: ref });
 }
 
+function isMarkdownFile(name) {
+  return /\.(md|markdown|mdx)$/i.test(name || '');
+}
+
+/** Compact markdown → safe HTML for the Files pane Preview mode. */
+function renderMarkdown(src) {
+  const text = String(src || '').replace(/\r\n/g, '\n');
+  const fences = [];
+  let s = text.replace(/```([\w-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const i = fences.length;
+    fences.push(`<pre><code class="lang-${esc(lang || '')}">${esc(code.replace(/\n$/, ''))}</code></pre>`);
+    return `\u0000FENCE${i}\u0000`;
+  });
+  s = esc(s);
+  s = s.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>')
+    .replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>')
+    .replace(/^####\s+(.+)$/gm, '<h4>$1</h4>')
+    .replace(/^###\s+(.+)$/gm, '<h3>$1</h3>')
+    .replace(/^##\s+(.+)$/gm, '<h2>$1</h2>')
+    .replace(/^#\s+(.+)$/gm, '<h1>$1</h1>')
+    .replace(/^&gt;\s?(.+)$/gm, '<blockquote>$1</blockquote>')
+    .replace(/^---+$/gm, '<hr>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Lists
+  s = s.replace(/(?:^|\n)((?:[\t ]*[-*+]\s+.+\n?)+)/g, block => {
+    const items = block.trim().split('\n').map(l => l.replace(/^[\t ]*[-*+]\s+/, '')).filter(Boolean);
+    return '\n<ul>' + items.map(i => `<li>${i}</li>`).join('') + '</ul>\n';
+  });
+  s = s.replace(/(?:^|\n)((?:[\t ]*\d+\.\s+.+\n?)+)/g, block => {
+    const items = block.trim().split('\n').map(l => l.replace(/^[\t ]*\d+\.\s+/, '')).filter(Boolean);
+    return '\n<ol>' + items.map(i => `<li>${i}</li>`).join('') + '</ol>\n';
+  });
+  // Paragraphs for remaining plain lines
+  s = s.split(/\n{2,}/).map(chunk => {
+    const t = chunk.trim();
+    if (!t) return '';
+    if (/^<(h[1-6]|ul|ol|pre|blockquote|hr|table)\b/i.test(t)) return t;
+    if (t.includes('\u0000FENCE')) return t;
+    return `<p>${t.replace(/\n/g, '<br>')}</p>`;
+  }).join('\n');
+  s = s.replace(/\u0000FENCE(\d+)\u0000/g, (_, i) => fences[Number(i)] || '');
+  return s;
+}
+
+function updateMdModeToggle(show) {
+  const box = $('paneMdMode');
+  if (!box) return;
+  box.classList.toggle('show', !!show);
+  if (show) {
+    $('paneMdPreview').classList.toggle('on', mdPreviewMode);
+    $('paneMdSource').classList.toggle('on', !mdPreviewMode);
+  }
+}
+
 function renderPaneFile(m) {
   showPaneDiffUi();
+  paneFileCache = m;
+  if (m.name) rememberPaneTab(m.name);
   $('paneDiffTitle').textContent = (m.name || 'File') + (m.truncated ? ' (truncated)' : '');
+  $('paneDiffAct').classList.remove('show');
+  $('paneDiffAct').innerHTML = ''; // no Changed-files / Diff footer on file preview
+  const md = isMarkdownFile(m.name) && !m.image && !m.error;
+  updateMdModeToggle(md);
   if (m.error) {
+    $('paneDiffBody').className = '';
     $('paneDiffBody').innerHTML = `<div class="hint">${esc(m.error)}</div>`;
-    $('paneDiffAct').innerHTML = `<button type="button" id="paneFileBack">← Files</button>`;
-    $('paneFileBack')?.addEventListener('click', () => { showPaneFiles(); send({ t: 'changes' }); }, { once: true });
     return;
   }
   if (m.image) {
+    updateMdModeToggle(false);
+    $('paneDiffBody').className = '';
     $('paneDiffBody').innerHTML = '';
     const img = new Image();
     img.src = m.image;
     img.style.maxWidth = '100%';
     $('paneDiffBody').append(img);
-  } else {
-    const lines = (m.text || '').replace(/\n$/, '').split('\n');
-    $('paneDiffBody').innerHTML = `<div class="code">${lines.map((l, n) =>
-      `<div class="l${n + 1 === m.line ? ' hl' : ''}"><i>${n + 1}</i>${esc(l) || ' '}</div>`).join('')}</div>`
-      + (m.truncated ? '<div class="hint">File too long; showing the first 512 KB</div>' : '');
-    if (m.line) $('paneDiffBody').querySelector('.hl')?.scrollIntoView({ block: 'center' });
+    return;
   }
-  const pathHint = m.path ? `\u200e${m.host ? m.host + ':' : ''}${m.path}` : '';
-  $('paneDiffAct').innerHTML = `<button type="button" id="paneFileBack">← Changed files</button>`
-    + (m.name ? `<button type="button" data-chdiff="${esc(m.name)}">Diff</button>` : '');
-  if (pathHint) {
-    const sub = document.createElement('div');
-    sub.className = 'hint';
-    sub.style.cssText = 'flex-basis:100%;margin:0;font-size:11px;opacity:.8';
-    sub.textContent = pathHint + (m.size != null ? ` · ${fmtSize(m.size)}` : '');
-    $('paneDiffAct').append(sub);
+  if (md && mdPreviewMode) {
+    $('paneDiffBody').className = 'md-preview';
+    $('paneDiffBody').innerHTML = renderMarkdown(m.text || '');
+    return;
   }
-  $('paneFileBack')?.addEventListener('click', () => { showPaneFiles(); send({ t: 'changes' }); }, { once: true });
+  $('paneDiffBody').className = '';
+  const lines = (m.text || '').replace(/\n$/, '').split('\n');
+  $('paneDiffBody').innerHTML = `<div class="code">${lines.map((l, n) =>
+    `<div class="l${n + 1 === m.line ? ' hl' : ''}"><i>${n + 1}</i>${esc(l) || ' '}</div>`).join('')}</div>`
+    + (m.truncated ? '<div class="hint">File too long; showing the first 512 KB</div>' : '');
+  if (m.line) $('paneDiffBody').querySelector('.hl')?.scrollIntoView({ block: 'center' });
 }
+$('paneMdPreview').onclick = () => {
+  mdPreviewMode = true;
+  store.set('mdPreview', null);
+  updateMdModeToggle(true);
+  if (paneFileCache) renderPaneFile(paneFileCache);
+};
+$('paneMdSource').onclick = () => {
+  mdPreviewMode = false;
+  store.set('mdPreview', 'off');
+  updateMdModeToggle(true);
+  if (paneFileCache) renderPaneFile(paneFileCache);
+};
 
 function showFile(m) {
   if (inPaneMode()) {
