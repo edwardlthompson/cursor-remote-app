@@ -499,7 +499,7 @@
 <script src="i18n.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-const UI_BUILD = 29; // bump when shell layout must force-refresh on phones
+const UI_BUILD = 30; // bump when shell layout must force-refresh on phones
 const PRIMARY = /^(run|allow|accept|approve|keep|continue|build|yes|运行|允许|接受|继续)/i;
 const store = {
   get: k => localStorage.getItem('cr-' + k),
@@ -1575,7 +1575,13 @@ function handleNotifAction(action, win) {
   if (authed) go();
   else setTimeout(go, 800);
 }
+// When a new SW activates, hard-reload once so status "UI N" cannot stay stuck on an old shell.
 navigator.serviceWorker?.addEventListener('message', e => {
+  if (e.data?.type === 'cr-sw-updated' && !sessionStorage.getItem('crSwReloaded')) {
+    sessionStorage.setItem('crSwReloaded', '1');
+    location.reload();
+    return;
+  }
   openWin(e.data?.openWin);
   if (e.data?.notifAction) handleNotifAction(e.data.notifAction, e.data.openWin);
 });
